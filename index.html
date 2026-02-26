@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>IA Particle System - Scale Fix</title>
+    <style>
+        :root { --primary: #00ffcc; --bg: #050505; --accent: #ff0066; }
+        body { margin: 0; overflow: hidden; background-color: var(--bg); font-family: sans-serif; color: white; touch-action: none; }
+        
+        #ui {
+            position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%);
+            width: 90%; max-width: 400px; z-index: 100;
+            background: rgba(0, 0, 0, 0.95); padding: 15px; border-radius: 20px;
+            border: 1px solid var(--primary); backdrop-filter: blur(10px);
+        }
+
+        .btn-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px; }
+        button {
+            background: rgba(255, 255, 255, 0.05); border: 1px solid var(--primary);
+            color: white; padding: 12px; border-radius: 10px; font-size: 11px;
+            font-weight: bold; cursor: pointer; text-transform: uppercase;
+        }
+        button.active { background: var(--primary); color: black; box-shadow: 0 0 15px var(--primary); }
+
+        .slider-group { margin-top: 10px; text-align: center; }
+        input[type="range"] { width: 100%; accent-color: var(--primary); cursor: pointer; }
+
+        #status-overlay {
+            position: absolute; top: 20px; left: 20px;
+            background: rgba(0,0,0,0.8); padding: 10px 20px;
+            border-radius: 50px; border: 1px solid var(--primary);
+            color: var(--primary); font-size: 12px; font-weight: bold; z-index: 10;
+        }
+
+        #video-container {
+            position: absolute; top: 20px; right: 20px; width: 80px; height: 80px;
+            border-radius: 50%; overflow: hidden; border: 2px solid var(--primary);
+            transform: scaleX(-1); z-index: 10;
+        }
+        video { width: 100%; height: 100%; object-fit: cover; }
+        label { display: block; font-size: 10px; color: #888; margin-bottom: 5px; text-transform: uppercase; }
+    </style>
+</head>
+<body>
+
+    <div id="status-overlay">CONECTANDO CÂMERA...</div>
+    <div id="video-container"><video id="input_video" playsinline></video></div>
+
+    <div id="ui">
+        <label>Modo de Interação</label>
+        <div class="btn-row">
+            <button onclick="setMode(1)" id="m1" class="active">Modo 1: Normal</button>
+            <button onclick="setMode(2)" id="m2">Modo 2: Explosão</button>
+        </div>
+
+        <label>Forma Base</label>
+        <div class="btn-row">
+            <button onclick="setShape('sphere')" id="s_sphere" class="active">Bola</button>
+            <button onclick="setShape('heart')" id="s_heart">Coração</button>
+        </div>
+
+        <div class="slider-group">
+            <label>Controle de Zoom</label>
+            <input type="range" id="zoomSlider" min="5" max="55" value="25">
+        </div>
+    </div>
+
+    <script type="importmap">
+        { "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        // --- Variáveis de Controle ---
+        const COUNT = 15000;
+        let mode = 1, shape = 'sphere', currentState = "NORMAL", zoomVal = 25;
+        let textTargets = [];
+        let currentVisualScale = 1.0;
+
+        const hand = { active: false, x: 0, y: 0, isFist: false, isPeace: false, isOpen: false, isClose: false };
+
+        // --- Three.js Setup ---
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        document.body.appendChild(renderer.domElement);
+
+        const geometry = new THREE.BufferGeometry();
+        const posArray = new Float32Array(COUNT * 3);
+        const velArray = new Float32Array(COUNT * 3);
+        const tarArray = new Float32Array(COUNT * 3);
+        const colArray = new Float32Array(COUNT * 3);
+
+        for (let i = 0; i < COUNT; i++) {
+            const color = new THREE.Color().setHSL(0.5 + Math.random()*0.1, 0.9, 0.6);
+            colArray[i*3] = color.r; colArray[i*3+1] = color.g; colArray[i*3+2] = color.b;
+        }
+
+        geometry.setAttribute('position', new THREE.BufferAttribute(posArray, 3));
+        geometry.setAttribute('color', new THREE.BufferAttribute(colArray, 3));
+        const material = new THREE.PointsMaterial({ size: 0.15, vertexColors: true, blending: THREE.AdditiveBlending, transparent: true, opacity: 0.85 });
+        const points = new THREE.Points(geometry, material);
+        scene.add(points);
+
+        // --- Texto "I love you" ---
+        function generateText() {
+            const canvas = document.createElement('canvas');
+            const ctx = canvas.getContext('2d');
+            canvas.width = 1200; canvas.height = 300;
+            ctx.fillStyle = "white"; ctx.font = "bold 110px Arial"; ctx.textAlign = "center";
+            ctx.fillText("I love you", 600, 150);
+            const data = ctx.getImageData(0,0,1200,300).data;
+            const pts = [];
+            for(let y=0; y<300; y+=4) for(let x=0; x<1200; x+=4) if(data[(y*1200+x)*4]>128) pts.push({x:(x-600)/500, y:(150-y)/500});
+            textTargets = pts;
+        }
+        generateText();
+
+        // --- Funções UI ---
+        window.setMode = (m) => { mode = m; updateUI(); updateTargets(); };
+        window.setShape = (s) => { shape = s; updateUI(); updateTargets(); };
+        document.getElementById('zoomSlider').oninput = (e) => zoomVal = parseFloat(e.target.value);
+
+        function updateUI() {
+            document.getElementById('m1').className = mode === 1 ? 'active' : '';
+            document.getElementById('m2').className = mode === 2 ? 'active' : '';
+            document.getElementById('s_sphere').className = shape === 'sphere' ? 'active' : '';
+            document.getElementById('s_heart').className = shape === 'heart' ? 'active' : '';
+        }
+
+        function updateTargets() {
+            const isText = (currentState === "TEXTO");
+            const vFOV = THREE.MathUtils.degToRad(camera.fov);
+            const height = 2 * Math.tan(vFOV / 2) * camera.position.z;
+            const width = height * camera.aspect;
+
+            for (let i = 0; i < COUNT; i++) {
+                let tx, ty, tz;
+                if (isText && textTargets.length > 0) {
+                    const pt = textTargets[i % textTargets.length];
+                    tx = pt.x * width * 0.35; ty = pt.y * width * 0.35; tz = (Math.random()-0.5);
+                } else {
+                    if (shape === 'sphere') {
+                        const phi = Math.acos(-1 + (2 * i) / COUNT);
+                        const theta = Math.sqrt(COUNT * Math.PI) * phi;
+                        tx = 8 * Math.cos(theta) * Math.sin(phi); ty = 8 * Math.sin(theta) * Math.sin(phi); tz = 8 * Math.cos(phi);
+                    } else { // Heart
+                        const t = (i / COUNT) * Math.PI * 2;
+                        tx = 0.6 * (16 * Math.pow(Math.sin(t), 3)); ty = 0.6 * (13 * Math.cos(t) - 5 * Math.cos(2*t) - 2 * Math.cos(3*t) - Math.cos(4*t)); tz = (Math.random()-0.5);
+                    }
+                }
+                tarArray[i*3] = tx; tarArray[i*3+1] = ty; tarArray[i*3+2] = tz;
+            }
+        }
+
+        // --- Detecção MediaPipe ---
+        const hands = new Hands({ locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}` });
+        hands.setOptions({ maxNumHands: 1, modelComplexity: 0, minDetectionConfidence: 0.75, minTrackingConfidence: 0.75 });
+
+        hands.onResults((res) => {
+            const status = document.getElementById('status-overlay');
+            const old = currentState;
+            if (res.multiHandLandmarks && res.multiHandLandmarks.length > 0) {
+                const lm = res.multiHandLandmarks[0];
+                hand.active = true; hand.x = (0.5 - lm[9].x) * 35; hand.y = (0.5 - lm[9].y) * 25;
+                const indexUp = lm[8].y < lm[6].y; const middleUp = lm[12].y < lm[10].y;
+                hand.isPeace = indexUp && middleUp && lm[16].y > lm[14].y;
+                hand.isFist = !indexUp && !middleUp;
+                hand.isOpen = indexUp && middleUp && lm[16].y < lm[14].y;
+                // Proximidade baseada no tamanho da mão na tela
+                const handSize = Math.hypot(lm[0].x - lm[9].x, lm[0].y - lm[9].y);
+                hand.isClose = handSize > 0.20;
+
+                if (mode === 2 && hand.isPeace) currentState = "TEXTO";
+                else if (mode === 2 && hand.isOpen) currentState = "EXPLOSAO";
+                else currentState = "NORMAL";
+
+                status.innerText = currentState === "TEXTO" ? "I LOVE YOU" : (hand.isFist ? "MÃO FECHADA" : "MÃO ABERTA");
+            } else { hand.active = false; currentState = "NORMAL"; status.innerText = "MOSTRAR MÃO"; }
+            if (old !== currentState) updateTargets();
+        });
+
+        const video = document.getElementById('input_video');
+        new Camera(video, { onFrame: async () => { await hands.send({ image: video }); }, width: 256, height: 256 }).start();
+
+        // --- Loop de Animação ---
+        function render() {
+            requestAnimationFrame(render);
+            camera.position.z += (zoomVal - camera.position.z) * 0.1;
+            const pos = geometry.attributes.position.array;
+
+            // --- CORREÇÃO DA ESCALA (MINIATURA) ---
+            // Funciona em qualquer modo. Independente de M1 ou M2.
+            let targetScale = 1.0;
+            if (hand.active && hand.isFist && hand.isClose) {
+                targetScale = 0.12; // Tamanho reduzido
+            }
+            
+            // Interpolação suave para a escala (sem timers)
+            currentVisualScale += (targetScale - currentVisualScale) * 0.15;
+            points.scale.set(currentVisualScale, currentVisualScale, currentVisualScale);
+
+            // Rotação
+            if (currentState === "TEXTO") {
+                points.rotation.y += (0 - points.rotation.y) * 0.1;
+            } else {
+                points.rotation.y += 0.012;
+            }
+
+            for (let i = 0; i < COUNT; i++) {
+                const i3 = i * 3;
+                let restoration = 0.08, damping = 0.88;
+
+                // Destino Base
+                let tx = tarArray[i3] + (mode === 1 && hand.active ? hand.x : 0);
+                let ty = tarArray[i3+1] + (mode === 1 && hand.active ? hand.y : 0);
+                let tz = tarArray[i3+2];
+
+                if (currentState === "TEXTO") { 
+                    restoration = 0.25; damping = 0.7; 
+                } else if (currentState === "EXPLOSAO") {
+                    restoration = 0; 
+                    damping = 0.96; 
+                }
+
+                let ax = (tx - pos[i3]) * restoration;
+                let ay = (ty - pos[i3+1]) * restoration;
+                let az = (tz - pos[i3+2]) * restoration;
+
+                // Explosão Radial (Modo 2)
+                if (currentState === "EXPLOSAO" && hand.active) {
+                    let dx = pos[i3], dy = pos[i3+1], dz = pos[i3+2];
+                    let d = Math.sqrt(dx*dx + dy*dy + dz*dz) || 1;
+                    let f = 0.65; 
+                    velArray[i3] += (dx / d) * f;
+                    velArray[i3+1] += (dy / d) * f;
+                    velArray[i3+2] += (dz / d) * f;
+                }
+
+                // Empurrar Mão (Fluidez Modo 1 ou Modo 2 se fechado)
+                if (hand.active && !hand.isFist && currentState !== "TEXTO") {
+                    const hdx = pos[i3] - hand.x, hdy = pos[i3+1] - hand.y;
+                    const hd = Math.sqrt(hdx*hdx + hdy*hdy);
+                    if (hd < 8) {
+                        const hf = (1.0 - hd / 8) * 0.6;
+                        ax += hdx * hf; ay += hdy * hf;
+                    }
+                }
+
+                velArray[i3] = (velArray[i3] + ax) * damping;
+                velArray[i3+1] = (velArray[i3+1] + ay) * damping;
+                velArray[i3+2] = (velArray[i3+2] + az) * damping;
+
+                pos[i3] += velArray[i3];
+                pos[i3+1] += velArray[i3+1];
+                pos[i3+2] += velArray[i3+2];
+            }
+            geometry.attributes.position.needsUpdate = true;
+            renderer.render(scene, camera);
+        }
+
+        updateTargets();
+        render();
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight; camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            generateText(); updateTargets();
+        });
+    </script>
+</body>
+</html>
